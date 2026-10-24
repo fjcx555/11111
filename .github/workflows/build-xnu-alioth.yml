@@ -1,0 +1,83 @@
+name: build-xnu-alioth
+
+# Build the redwood (ios-alioth) XNU kernel for the Redmi K40 (alioth) on a
+# GitHub-hosted Linux runner, then hand back mach.development.bcm2837.
+#
+# What it does, in the order of the project's own scripts:
+#   1. installs the system tools xnu-deps/setup.sh asks for
+#   2. installs theos (Linux toolchain) and the iPhoneOS 16.5 SDK
+#   3. src/hackios-xnu-kernel-main/xnu/apply.sh   -> fetches xnu-8796.121.2, applies redwood.patch + files/
+#   4. src/hackios-xnu-kernel-main/xnu-deps/setup.sh -> host tools, DriverKit headers, static libraries
+#   5. DEVICE=alioth ./xnu-build.sh -j$(nproc) -k -> the kernel
+#
+# The kernel is downloadable from the run's "Artifacts" tab.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git curl wget tar xz-utils make clang lld flex bison m4 \
+            perl python3 autoconf automake libtool pkg-config
+
+      - name: theos (Linux toolchain)
+        run: |
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
+          cd "$HOME/theos"
+          ./bootstrap.sh
+          test -x "$HOME/theos/toolchain/linux/iphone/bin/ld" || { echo "no cctools"; exit 1; }
+
+      - name: iPhoneOS 16.5 SDK
+        run: |
+          mkdir -p "$HOME/theos/sdks"
+          set +e
+          curl -fL --retry 3 -o /tmp/sdk.tar.xz \
+            https://github.com/theos/sdks/releases/download/iPhoneOS16.5/iPhoneOS16.5.sdk.tar.xz
+          ok=$?
+          set -e
+          if [ $ok -eq 0 ] && [ -s /tmp/sdk.tar.xz ]; then
+            tar -C "$HOME/theos/sdks" -xJf /tmp/sdk.tar.xz
+            rm -f /tmp/sdk.tar.xz
+          else
+            echo "release tarball unavailable; sparse-cloning the theos/sdks repo"
+            git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$HOME/theos/sdks"
+            git -C "$HOME/theos/sdks" sparse-checkout set iPhoneOS16.5.sdk
+          fi
+          test -d "$HOME/theos/sdks/iPhoneOS16.5.sdk/usr/include"
+
+      - name: apply xnu sources
+        run: |
+          cd src/hackios-xnu-kernel-main
+          ./xnu/apply.sh
+
+      - name: kernel dependencies (stage 1 + 2)
+        run: |
+          cd src/hackios-xnu-kernel-main
+          ./xnu-deps/setup.sh
+
+      - name: build the kernel
+        run: |
+          cd src/hackios-xnu-kernel-main
+          DEVICE=alioth ./xnu-build.sh -j"$(nproc)" -k
+          echo "built for $(cat BUILD/obj/redwood-objects 2>/dev/null || true)"
+          ls -la xnu-src/xnu-8796.121.2/BUILD/obj/*/DEVELOPMENT/ARM64/
+
+      - name: upload the kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: mach.development.bcm2837
+          path: src/hackios-xnu-kernel-main/xnu-src/xnu-8796.121.2/BUILD/obj/*/DEVELOPMENT/ARM64/mach.development.*
+          if-no-files-found: error
