@@ -76,9 +76,8 @@ jobs:
       - name: kernel dependencies (stage 1 + 2)
         run: |
           cd src/hackios-xnu-kernel-main
-          mkdir -p xnu-deps/host/bin
-          printf '#!/bin/sh\nexit 0\n' > xnu-deps/host/bin/codesign
-          chmod +x xnu-deps/host/bin/codesign
+          # the committed fake tools (xcrun, sw_vers, codesign, ...) lost their exec bits in the zip
+          chmod +x xnu-deps/host/bin/* 2>/dev/null || true
           ./xnu-deps/setup.sh || { echo "===== exporthdrs.log ====="; cat xnu-deps/exporthdrs.log 2>/dev/null || true; exit 1; }
 
       - name: build the kernel
