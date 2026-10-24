@@ -88,12 +88,16 @@ jobs:
       - name: build the kernel
         run: |
           cd src/hackios-xnu-kernel-main
+          # make's dSYM rule runs "$(shell xcrun -find dsymutil) --minimize ..."; no dsymutil
+          # exists on Linux, and an empty DSYMUTIL turns "--minimize" into a command.
+          printf '#!/bin/sh\nexit 0\n' > xnu-deps/host/bin/dsymutil
+          chmod +x xnu-deps/host/bin/dsymutil
           DEVICE=alioth ./xnu-build.sh -j"$(nproc)" -k
-          ls -la xnu-src/xnu-8796.121.2/BUILD/obj/*/DEVELOPMENT/ARM64/ || true
+          ls -la xnu-src/xnu-8796.121.2/BUILD/obj/*/mach.development.* || true
 
       - name: upload the kernel
         uses: actions/upload-artifact@v4
         with:
           name: mach.development.bcm2837
-          path: src/hackios-xnu-kernel-main/xnu-src/xnu-8796.121.2/BUILD/obj/*/DEVELOPMENT/ARM64/mach.development.*
+          path: src/hackios-xnu-kernel-main/xnu-src/xnu-8796.121.2/BUILD/obj/*/mach.development.bcm2837
           if-no-files-found: error
