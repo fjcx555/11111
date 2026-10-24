@@ -70,6 +70,7 @@ jobs:
       - name: apply xnu sources
         run: |
           cd src/hackios-xnu-kernel-main
+          find . -name '*.sh' -exec chmod +x {} +
           ./xnu/apply.sh
 
       - name: kernel dependencies (stage 1 + 2)
