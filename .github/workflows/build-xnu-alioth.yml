@@ -50,17 +50,18 @@ jobs:
 
       - name: iPhoneOS 16.5 SDK
         run: |
-          mkdir -p "$HOME/theos/sdks"
           set +e
           curl -fL --retry 3 -o /tmp/sdk.tar.xz \
-            https://github.com/theos/sdks/releases/download/iPhoneOS16.5/iPhoneOS16.5.sdk.tar.xz
+            https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz
           ok=$?
           set -e
           if [ $ok -eq 0 ] && [ -s /tmp/sdk.tar.xz ]; then
+            mkdir -p "$HOME/theos/sdks"
             tar -C "$HOME/theos/sdks" -xJf /tmp/sdk.tar.xz
             rm -f /tmp/sdk.tar.xz
           else
             echo "release tarball unavailable; sparse-cloning the theos/sdks repo"
+            rm -rf "$HOME/theos/sdks"
             git clone --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git "$HOME/theos/sdks"
             git -C "$HOME/theos/sdks" sparse-checkout set iPhoneOS16.5.sdk
           fi
