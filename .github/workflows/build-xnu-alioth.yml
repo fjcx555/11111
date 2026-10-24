@@ -5,12 +5,17 @@ name: build-xnu-alioth
 #
 # What it does, in the order of the project's own scripts:
 #   1. installs the system tools xnu-deps/setup.sh asks for
-#   2. installs theos (Linux toolchain) and the iPhoneOS 16.5 SDK
+#   2. installs theos (Linux toolchain: repo clone + prebuilt iOSToolchain)
+#      and the iPhoneOS 16.5 SDK (theos/sdks, 16.5 only)
 #   3. src/hackios-xnu-kernel-main/xnu/apply.sh   -> fetches xnu-8796.121.2, applies redwood.patch + files/
 #   4. src/hackios-xnu-kernel-main/xnu-deps/setup.sh -> host tools, DriverKit headers, static libraries
 #   5. DEVICE=alioth ./xnu-build.sh -j$(nproc) -k -> the kernel
 #
 # The kernel is downloadable from the run's "Artifacts" tab.
+#
+# Note: theos's official installer (bin/install-theos) is not used: it would
+# also pull the LATEST iOS SDK (we need exactly iPhoneOS16.5) and it expects to
+# be run interactively. We replicate its Linux steps directly.
 
 on:
   workflow_dispatch:
@@ -32,16 +37,16 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential git curl wget tar xz-utils make clang lld flex bison m4 \
             perl python3 autoconf automake libtool pkg-config libxml2-dev libssl-dev \
-            zlib1g-dev libbz2-dev
+            zlib1g-dev libbz2-dev libtinfo6
 
       - name: theos (Linux toolchain)
         run: |
           git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
-          cd "$HOME/theos"
-          ./bootstrap.sh
-          echo "toolchain layout:"
-          ls -la "$HOME/theos/toolchain/linux/iphone/bin" 2>/dev/null || \
-            find "$HOME/theos/toolchain" -maxdepth 3 -name 'ld*' 2>/dev/null | head -20
+          curl -fsSL --retry 3 \
+            https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz \
+            | tar -xJ -C "$HOME/theos/toolchain/"
+          test -x "$HOME/theos/toolchain/linux/iphone/bin/clang"
+          "$HOME/theos/toolchain/linux/iphone/bin/clang" --version | head -1
 
       - name: iPhoneOS 16.5 SDK
         run: |
@@ -75,8 +80,7 @@ jobs:
         run: |
           cd src/hackios-xnu-kernel-main
           DEVICE=alioth ./xnu-build.sh -j"$(nproc)" -k
-          echo "built for $(cat BUILD/obj/redwood-objects 2>/dev/null || true)"
-          ls -la xnu-src/xnu-8796.121.2/BUILD/obj/*/DEVELOPMENT/ARM64/
+          ls -la xnu-src/xnu-8796.121.2/BUILD/obj/*/DEVELOPMENT/ARM64/ || true
 
       - name: upload the kernel
         uses: actions/upload-artifact@v4
