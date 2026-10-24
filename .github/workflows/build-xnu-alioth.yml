@@ -72,6 +72,11 @@ jobs:
           cd src/hackios-xnu-kernel-main
           find . -name '*.sh' -exec chmod +x {} +
           ./xnu/apply.sh
+          # redwood.patch's bsd/conf/files hunk predates alioth_pcie.c, which
+          # redwood_input.c calls unconditionally; add it to the build list.
+          if ! grep -q 'bsd/dev/alioth_pcie.c' xnu-src/xnu-8796.121.2/bsd/conf/files; then
+            printf 'bsd/dev/alioth_pcie.c\t\tstandard\n' >> xnu-src/xnu-8796.121.2/bsd/conf/files
+          fi
 
       - name: kernel dependencies (stage 1 + 2)
         run: |
