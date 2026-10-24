@@ -76,7 +76,7 @@ jobs:
       - name: kernel dependencies (stage 1 + 2)
         run: |
           cd src/hackios-xnu-kernel-main
-          ./xnu-deps/setup.sh
+          ./xnu-deps/setup.sh || { echo "===== exporthdrs.log ====="; cat xnu-deps/exporthdrs.log 2>/dev/null || true; exit 1; }
 
       - name: build the kernel
         run: |
