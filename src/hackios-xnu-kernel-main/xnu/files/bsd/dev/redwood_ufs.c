@@ -1441,7 +1441,7 @@ static void
 ufs_dump_log(void)
 {
 	uint32_t part = BLOCK_MAX_PARTS;
-	uint64_t total, done = 0;
+	uint64_t total, done = 0, bs;
 	uint8_t *chunk;
 
 	for (uint32_t i = 0; i < ufs_parts; i++) {
@@ -1453,16 +1453,18 @@ ufs_dump_log(void)
 		printf("ufs: dump_log: no partition logdump\n");
 		return;
 	}
-	total = ufs_page->part[part].blocks * ufs_page->part[part].block_size;
-	if (total > 256 * 1024) {
-		total = 256 * 1024;
+	bs = ufs_page->part[part].block_size;
+	total = ufs_page->part[part].blocks * bs;
+	if (total > 128 * 1024) {
+		total = 128 * 1024;
 	}
 	chunk = kalloc_data(1 << 20, Z_WAITOK);
 	if (chunk == NULL) {
 		printf("ufs: dump_log: no memory\n");
 		return;
 	}
-	printf("ufs: dump_log: the logdump partition (%llu bytes of it) follows\n", total);
+	printf("ufs: dump_log: logdump: %llu blocks of %llu bytes = %llu bytes to print\n",
+	    ufs_page->part[part].blocks, bs, total);
 	while (done < total) {
 		uint64_t n = total - done < (1 << 20) ? total - done : (1 << 20);
 		int error = ufs_read(part, done, chunk, n);
@@ -1471,6 +1473,7 @@ ufs_dump_log(void)
 			printf("ufs: dump_log: read failed at %llu (%d)\n", done, error);
 			break;
 		}
+		printf("ufs: dump_log: got %llu bytes at %llu\n", n, done);
 		/* one printf per 128-byte line: far fewer locked calls than a putc per byte */
 		for (uint64_t i = 0; i < n; i += 128) {
 			char line[129];
@@ -1486,7 +1489,7 @@ ufs_dump_log(void)
 		}
 		done += n;
 	}
-	printf("\nufs: dump_log: end\n");
+	printf("\nufs: dump_log: end, %llu bytes printed; the kernel keeps running\n", done);
 	kfree_data(chunk, 1 << 20);
 }
 
