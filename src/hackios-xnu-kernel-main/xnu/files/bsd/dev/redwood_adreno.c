@@ -3299,10 +3299,23 @@ step_core_start(void)
 	 * writes it, and this is the cleanest control yet for what the writing itself does). */
 	printf("adreno: %u: about to write %u to cp_sqe_cntl%s\n", step, sqe, nosqe ? " (adreno_nosqe: skipping)" : "");
 	if (maskserror) {
-		printf("adreno: %u: masking async SErrors on this CPU (adreno_maskserror)\n", step);
+		printf("adreno: %u: masking async SErrors on this CPU (adreno_maskserror); nothing prints until they are unmasked\n", step);
 		__asm__ volatile("msr daifset, #0x2" : : : "memory");
 	}
-	if (!nosqe) {
+	if (nosqe) {
+		/* nothing written */
+	} else if (maskserror) {
+		/*
+		 * The write itself, inline: the helper's own "about to write" line cannot
+		 * print while SErrors are masked (the console panics on I/O from an
+		 * interrupt-disabled context, and DAIF.A counts as disabled). The write is
+		 * posted, so the mask is held across the window in which the async SError
+		 * of a bus fault would arrive, then dropped before any further printing.
+		 */
+		__asm__ volatile("str %w0, [%1]" : : "r"((uint32_t)sqe), "r"((uint64_t)(gpu.base + CP_SQE_CNTL)) : "memory");
+		for (volatile uint32_t spin = 0; spin < 8000000; spin++) ;
+		__asm__ volatile("msr daifclr, #0x2" : : : "memory");
+	} else {
 		put(&gpu, "cp_sqe_cntl", CP_SQE_CNTL, sqe);
 	}
 	/*
@@ -3311,10 +3324,11 @@ step_core_start(void)
 	 * right when these lines are printed -- so the last 240 bytes of the log, which its last note
 	 * keeps, name the access the machine did not come back from.
 	 */
-	printf("adreno: %u: the write to cp_sqe_cntl came back\n", step);
+	printf("adreno: %u: the write to cp_sqe_cntl came back%s\n", step, maskserror ? " (SErrors were masked across the write)" : "");
 	sleep_ms(20);
 	printf("adreno: %u: awake 20 ms after it\n", step);
 	if (!loose_map || maskserror) {
+	get(&gpu, "cp_sqe_cntl readback", CP_SQE_CNTL);
 	get(&gpu, "rbbm_status", RBBM_STATUS);
 	get(&gpu, "rbbm_int_0_status", RBBM_INT_0_STATUS);
 	get(&gpu, "cp_hw_fault", CP_HW_FAULT);
@@ -3324,6 +3338,8 @@ step_core_start(void)
 	get(&smmu, "cb fsr", smmu_context(&core_space) + SMMU_CB_FSR);
 	get(&smmu, "sgfsr", SMMU_SGFSR);
 	get(&smmu, "sgfsynr0", SMMU_SGFSR + 8);
+	get(&gmu, "sptprac_pwr_clk_status", GMU_SPTPRAC_PWR_CLK_STATUS);
+	get(&gmu, "gmu2host intr", GMU_WORD(0x5192));
 	}
 	if (loose_map && !maskserror) {
 		printf("adreno: %u: loose: the write was posted; holding 3 s so the loader takes this down, then giving up the start\n", step);
