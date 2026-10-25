@@ -2722,6 +2722,7 @@ step_core_power(void)
 
 /* commands (Mesa's adreno_pm4.xml); a packet is a header word and so many more */
 #define CP_NOP                  0x10
+#define CP_THREAD_CONTROL       0x17            /* UniXNU A740 driver sends it before CP_ME_INIT (CONCURRENT_BIN_DISABLE) */
 #define CP_WAIT_FOR_IDLE        0x26
 #define CP_BLIT                 0x2c
 #define CP_MEM_WRITE            0x3d
@@ -3052,7 +3053,7 @@ step_core_start(void)
 	 * adreno_nosqe (do not write CP_SQE_CNTL at all), adreno_reglist (give CP_ME_INIT the
 	 * vendor power-up register list, instead of none), adreno_ecore (the rest of a6xx_start()).
 	 */
-	uint32_t hwcg = 0, bicubic = 0, gmucnt = 0, protect = 0, nosqe = 0, reglist = 0, ecore = 0;
+	uint32_t hwcg = 0, bicubic = 0, gmucnt = 0, protect = 0, nosqe = 0, reglist = 0, ecore = 0, fence = 0;
 	PE_parse_boot_argn("adreno_hwcg", &hwcg, sizeof(hwcg));
 	PE_parse_boot_argn("adreno_bicubic", &bicubic, sizeof(bicubic));
 	PE_parse_boot_argn("adreno_gmucnt", &gmucnt, sizeof(gmucnt));
@@ -3060,6 +3061,7 @@ step_core_start(void)
 	PE_parse_boot_argn("adreno_nosqe", &nosqe, sizeof(nosqe));
 	PE_parse_boot_argn("adreno_reglist", &reglist, sizeof(reglist));
 	PE_parse_boot_argn("adreno_ecore", &ecore, sizeof(ecore));
+	PE_parse_boot_argn("adreno_fence", &fence, sizeof(fence));
 	if (sptprac) {
 		put(&gmu, "gx_sptprac_power_control", GMU_WORD(0x0081), 0x00778000);
 		for (int i = 0; i < 20 && !(rd(gmu.base + GMU_SPTPRAC_PWR_CLK_STATUS) & (1u << 3)); i++) {
@@ -3297,10 +3299,27 @@ step_core_start(void)
 	/* adreno_sqe=N: what goes into CP_SQE_CNTL (1 starts it; 0 is the control: does the writing itself end the run?)
 	 * adreno_nosqe=1: the register is not written at all (the UniXNU driver for the Adreno 740 never
 	 * writes it, and this is the cleanest control yet for what the writing itself does). */
-	printf("adreno: %u: about to write %u to cp_sqe_cntl%s\n", step, sqe, nosqe ? " (adreno_nosqe: skipping)" : "");
+	printf("adreno: %u: about to write %u to cp_sqe_cntl%s\n", step, sqe,
+	    nosqe ? " (adreno_nosqe: skipping)" : fence ? " (adreno_fence: the vendor order: start the CP, then at once send CP_ME_INIT)"
+	                                             : "");
 	if (maskserror) {
 		printf("adreno: %u: masking async SErrors on this CPU (adreno_maskserror); nothing prints until they are unmasked\n", step);
 		__asm__ volatile("msr daifset, #0x2" : : : "memory");
+	}
+	if (fence) {
+		/*
+		 * adreno_fence=1: the vendor's own order (MiCode alioth-r-oss adreno_a6xx.c, a6xx_hw_init):
+		 * "Clear the SQE_HALT to start the CP engine" -- write CP_SQE_CNTL=1 -- and then IMMEDIATELY
+		 * send CP_ME_INIT, with no pause and no readbacks in between. The default path writes the
+		 * register, sleeps 20 ms and reads a dozen registers back before the ME_INIT reaches the
+		 * ring: a started command processor idle on an empty ring is the one thing every earlier
+		 * write experiment died on, and the UniXNU A740 driver (NativeAdrenoGpu::start) never even
+		 * writes CP_SQE_CNTL. This branch goes straight on to the ME_INIT submission (below), which
+		 * now also carries the A740 driver's CP_THREAD_CONTROL and a CACHE_FLUSH_TS fence the core
+		 * writes itself (emitFence: the same CP_EVENT_WRITE opcode on A6XX, event 0x31).
+		 */
+		__asm__ volatile("str %w0, [%1]" : : "r"((uint32_t)sqe), "r"((uint64_t)(gpu.base + CP_SQE_CNTL)) : "memory");
+		goto send_me_init;
 	}
 	if (nosqe) {
 		/* nothing written */
@@ -3368,6 +3387,7 @@ step_core_start(void)
 		return false;
 	}
 
+send_me_init:
 	announce("give the 3D core its first command, \"initialize\"");
 	/*
 	 * adreno_reglist=1: the vendor CP_ME_INIT (a6xx_send_cp_init: mask 0x16f, several hardware
@@ -3400,12 +3420,44 @@ step_core_start(void)
 		me_init[10] = 0;
 		me_init_words = 11;
 	}
+	if (fence) {
+		/* the UniXNU A740 driver sends CP_THREAD_CONTROL (CONCURRENT_BIN_DISABLE) at the head of
+		 * its command streams (a7xx_submit); this is the first packet the core reads after the
+		 * start, in the same submission as the ME_INIT. */
+		ring_command(CP_THREAD_CONTROL, 1);
+		ring(1u << 27);
+	}
 	ring_command(CP_ME_INIT, me_init_words);
 	for (unsigned i = 0; i < me_init_words; i++) {
 		ring(me_init[i]);
 	}
-	if (!ring_run("initialize its command processor")) {
+	if (fence) {
+		/* The init fence: a CP_EVENT_WRITE with the CACHE_FLUSH_TS event, write-enabled and
+		 * interrupt set, that the command processor executes after the ME_INIT and that writes
+		 * the value into our scratch page (which step 21 already uses to prove the core writes
+		 * our memory). The ring pointer only shows the packets were taken; this shows the
+		 * ME_INIT was carried out. (CP_SCRATCH(2) 0x885 is the CPU's own note, as in the A740
+		 * driver's emitFence; scratch+4 is the fence word.) */
+		uint32_t seqno = 0x600dc0de;
+		ring_register(0x885, seqno);
+		ring_command(CP_EVENT_WRITE, 4);
+		ring(0x31 | 1u << 27 | 1u << 31);       /* CACHE_FLUSH_TS, write enabled, interrupt */
+		ring(CORE_SCRATCH_ADDRESS + 4);
+		ring(0);
+		ring(seqno);
+	}
+	if (!ring_run(fence ? "initialize its command processor and raise its init fence" : "initialize its command processor")) {
 		return false;
+	}
+	if (fence) {
+		to_memory(core_scratch.memory, 4096);
+		uint32_t seqno = 0x600dc0de;
+		uint32_t saw = ((volatile uint32_t *)core_scratch.memory)[1];
+		printf("adreno: %u: init fence %s (scratch+4 reads %#x)\n", step,
+		    saw == seqno ? "written by the command processor" : "never written", saw);
+		if (saw != seqno) {
+			return false;
+		}
 	}
 	if (oob) {
 		/* the GMU may take the GPU's power in hand again now that the command processor runs */
