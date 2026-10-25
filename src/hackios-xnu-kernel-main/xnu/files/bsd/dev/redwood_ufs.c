@@ -1471,10 +1471,18 @@ ufs_dump_log(void)
 			printf("ufs: dump_log: read failed at %llu (%d)\n", done, error);
 			break;
 		}
-		for (uint64_t i = 0; i < n; i++) {
-			uint8_t c = chunk[i];
+		/* one printf per 128-byte line: far fewer locked calls than a putc per byte */
+		for (uint64_t i = 0; i < n; i += 128) {
+			char line[129];
+			uint64_t j, m = n - i < 128 ? n - i : 128;
 
-			printf("%c", c >= 0x20 && c < 0x7f ? c : (c == '\n' || c == '\r' ? c : '.'));
+			for (j = 0; j < m; j++) {
+				uint8_t c = chunk[i + j];
+
+				line[j] = c >= 0x20 && c < 0x7f ? (char)c : (c == '\n' || c == '\r' ? (char)c : '.');
+			}
+			line[m] = 0;
+			printf("%s", line);
 		}
 		done += n;
 	}
@@ -1540,7 +1548,6 @@ redwood_ufs_init(void)
 	check = 0;
 	if (PE_parse_boot_argn("ufs_dump_log", &check, sizeof(check)) && check == 1) {
 		ufs_dump_log();
-		loader_return();
 	}
 	/*
 	 * ufs_write=1: /dev/rufs_darwin takes writes, past the iOS volume and the cryptexes. darwin
