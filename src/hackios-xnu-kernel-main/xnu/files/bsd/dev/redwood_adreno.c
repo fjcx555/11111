@@ -286,6 +286,7 @@ static const struct adreno_soc soc_a650 = {
 
 static const struct adreno_soc *soc = &soc_a660;
 static uint64_t zap_memory;             /* soc->zap_memory, unless adreno_zap_mem= says otherwise */
+static uint32_t loose_map;              /* adreno_loose=1: map the 3D core registers as normal memory */
 
 static int say(const char *format, ...) __printflike(1, 2);   /* defined below; this is the log */
 
@@ -308,6 +309,7 @@ soc_select(void)
 	if (PE_parse_boot_argn("adreno_zap_mem", &zap, sizeof(zap)) && zap != 0) {
 		zap_memory = zap;
 	}
+	PE_parse_boot_argn("adreno_loose", &loose_map, sizeof(loose_map));
 	say("adreno: SoC %s (an Adreno %s): %u KB of GMEM, %u speeds (the default is %u)\n", soc->name, soc->gpu_name,
 	    soc->gmem / 1024, soc->speed_count, soc->default_speed);
 }
@@ -395,7 +397,7 @@ static void
 need(struct block *b)
 {
 	if (b->base == 0) {
-		b->base = ml_io_map(b->phys, b->size);
+		b->base = (loose_map && b->phys == 0x03d00000) ? ml_io_map_wcomb(b->phys, b->size) : ml_io_map(b->phys, b->size);
 	}
 }
 
@@ -3046,15 +3048,16 @@ step_core_start(void)
 	 * adreno_hwcg (the hardware clock gates), adreno_bicubic (the a650 sampling weights),
 	 * adreno_gmucnt (the GMU power counters), adreno_protect (the CP register protection),
 	 * adreno_nosqe (do not write CP_SQE_CNTL at all), adreno_reglist (give CP_ME_INIT the
-	 * vendor power-up register list, instead of none).
+	 * vendor power-up register list, instead of none), adreno_ecore (the rest of a6xx_start()).
 	 */
-	uint32_t hwcg = 0, bicubic = 0, gmucnt = 0, protect = 0, nosqe = 0, reglist = 0;
+	uint32_t hwcg = 0, bicubic = 0, gmucnt = 0, protect = 0, nosqe = 0, reglist = 0, ecore = 0;
 	PE_parse_boot_argn("adreno_hwcg", &hwcg, sizeof(hwcg));
 	PE_parse_boot_argn("adreno_bicubic", &bicubic, sizeof(bicubic));
 	PE_parse_boot_argn("adreno_gmucnt", &gmucnt, sizeof(gmucnt));
 	PE_parse_boot_argn("adreno_protect", &protect, sizeof(protect));
 	PE_parse_boot_argn("adreno_nosqe", &nosqe, sizeof(nosqe));
 	PE_parse_boot_argn("adreno_reglist", &reglist, sizeof(reglist));
+	PE_parse_boot_argn("adreno_ecore", &ecore, sizeof(ecore));
 	if (sptprac) {
 		put(&gmu, "gx_sptprac_power_control", GMU_WORD(0x0081), 0x00778000);
 		for (int i = 0; i < 20 && !(rd(gmu.base + GMU_SPTPRAC_PWR_CLK_STATUS) & (1u << 3)); i++) {
@@ -3178,6 +3181,30 @@ step_core_start(void)
 	}
 	put(&gpu, "cp_apriv_cntl", CP_APRIV_CNTL, 1u << 6 | 1u << 5 | 1u << 3 | 1u << 2 | 1u << 1);
 	put(&gpu, "rb_dbg_eco_cntl", RB_DBG_ECO_CNTL, soc->rb_dbg_eco);     /* Mesa's value for this GPU */
+	/*
+	 * adreno_ecore=1: the rest of the vendor a6xx_start() (adreno_a6xx.c), in the order it writes
+	 * them: the UCHE write-through/trap ranges (which effectively disable the L2 bypass) with the
+	 * filter and ways, the CP command-queue thresholds and memory pool size, the primitive FIFO
+	 * threshold for PC_DBG_ECO_CNTL, the AHB default slave response set to ERROR (instead of a
+	 * stall), the performance counter enable, the interface hang detector, and the UCHE client
+	 * prefetch. a650 values from adreno-gpulist.h (prim_fifo_threshold 0x300000, hang_detect
+	 * 0x3ffff) and a6xx_reg.h.
+	 */
+	if (ecore) {
+		put64(&gpu, "uche_write_range_max", GPU_WORD(0xe05), 0x0001ffffffffffc0ull);
+		put64(&gpu, "uche_write_thru_base", GPU_WORD(0xe07), 0x0001fffffffff000ull);
+		put64(&gpu, "uche_trap_base", GPU_WORD(0xe09), 0x0001fffffffff000ull);
+		put(&gpu, "uche_filter_cntl", GPU_WORD(0xe18), 0x804);
+		put(&gpu, "uche_cache_ways", GPU_WORD(0xe17), 0x4);
+		put(&gpu, "cp_roq_thresholds_2", GPU_WORD(0x8c2), 0x02000140);
+		put(&gpu, "cp_roq_thresholds_1", GPU_WORD(0x8c1), 0x8040362c);
+		put(&gpu, "cp_mem_pool_size", GPU_WORD(0x8c3), 128);
+		put(&gpu, "pc_dbg_eco_cntl", GPU_WORD(0x9e00), 0x00300000);
+		put(&gpu, "cp_ahb_cntl", GPU_WORD(0x98d), 0x1);
+		put(&gpu, "rbbm_perfctr_cntl", GPU_WORD(0x500), 0x1);
+		put(&gpu, "rbbm_interface_hang_int_cntl", GPU_WORD(0x1f), (1u << 30) | 0x3ffff);
+		put(&gpu, "uche_client_pf", GPU_WORD(0xe19), 1);
+	}
 	/*
 	 * adreno_gmucnt=1: the GMU own power counters, which the vendor driver arms at the end of
 	 * its start (a6xx_gmu.c, gmu registers in the word numbering of this file): the busy mask in
