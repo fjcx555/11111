@@ -1436,6 +1436,52 @@ SYSCTL_PROC(_kern_redwood, OID_AUTO, ufs_native, CTLTYPE_INT | CTLFLAG_RW | CTLF
 SYSCTL_QUAD(_kern_redwood, OID_AUTO, ufs_native_fallbacks, CTLFLAG_RD | CTLFLAG_LOCKED, &ufs_native_fallbacks,
     "times a read of this kernel's own UFS driver failed and the loader's was used instead");
 
+
+static void
+ufs_dump_log(void)
+{
+	uint32_t part = BLOCK_MAX_PARTS;
+	uint64_t total, done = 0;
+	uint8_t *chunk;
+
+	for (uint32_t i = 0; i < ufs_parts; i++) {
+		if (strcmp((const char *)ufs_page->part[i].name, "logdump") == 0) {
+			part = i;
+		}
+	}
+	if (part == BLOCK_MAX_PARTS) {
+		printf("ufs: dump_log: no partition logdump\n");
+		return;
+	}
+	total = ufs_page->part[part].blocks * ufs_page->part[part].block_size;
+	if (total > 256 * 1024) {
+		total = 256 * 1024;
+	}
+	chunk = kalloc_data(1 << 20, Z_WAITOK);
+	if (chunk == NULL) {
+		printf("ufs: dump_log: no memory\n");
+		return;
+	}
+	printf("ufs: dump_log: the logdump partition (%llu bytes of it) follows\n", total);
+	while (done < total) {
+		uint64_t n = total - done < (1 << 20) ? total - done : (1 << 20);
+		int error = ufs_read(part, done, chunk, n);
+
+		if (error) {
+			printf("ufs: dump_log: read failed at %llu (%d)\n", done, error);
+			break;
+		}
+		for (uint64_t i = 0; i < n; i++) {
+			uint8_t c = chunk[i];
+
+			printf("%c", c >= 0x20 && c < 0x7f ? c : (c == '\n' || c == '\r' ? c : '.'));
+		}
+		done += n;
+	}
+	printf("\nufs: dump_log: end\n");
+	kfree_data(chunk, 1 << 20);
+}
+
 /* ---- bringing it up ---- */
 
 void
@@ -1491,6 +1537,11 @@ redwood_ufs_init(void)
 	printf("ufs: %u partitions of the phone's storage as /dev/ufs_NAME and /dev/rufs_NAME, read only, "
 	    "through the loader's page at %llx and its %u KB buffer\n", made, pa, ufs_buffer_size >> 10);
 
+	check = 0;
+	if (PE_parse_boot_argn("ufs_dump_log", &check, sizeof(check)) && check == 1) {
+		ufs_dump_log();
+		loader_return();
+	}
 	/*
 	 * ufs_write=1: /dev/rufs_darwin takes writes, past the iOS volume and the cryptexes. darwin
 	 * has to be the partition the port was set up with, in everything the loader's table says of
