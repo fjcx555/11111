@@ -287,6 +287,7 @@ static const struct adreno_soc soc_a650 = {
 static const struct adreno_soc *soc = &soc_a660;
 static uint64_t zap_memory;             /* soc->zap_memory, unless adreno_zap_mem= says otherwise */
 static uint32_t loose_map;              /* adreno_loose=1: map the 3D core registers as normal memory */
+static uint32_t maskserror;             /* adreno_maskserror=1: mask async SErrors before starting the CP */
 
 static int say(const char *format, ...) __printflike(1, 2);   /* defined below; this is the log */
 
@@ -310,6 +311,7 @@ soc_select(void)
 		zap_memory = zap;
 	}
 	PE_parse_boot_argn("adreno_loose", &loose_map, sizeof(loose_map));
+	PE_parse_boot_argn("adreno_maskserror", &maskserror, sizeof(maskserror));
 	say("adreno: SoC %s (an Adreno %s): %u KB of GMEM, %u speeds (the default is %u)\n", soc->name, soc->gpu_name,
 	    soc->gmem / 1024, soc->speed_count, soc->default_speed);
 }
@@ -3296,6 +3298,10 @@ step_core_start(void)
 	 * adreno_nosqe=1: the register is not written at all (the UniXNU driver for the Adreno 740 never
 	 * writes it, and this is the cleanest control yet for what the writing itself does). */
 	printf("adreno: %u: about to write %u to cp_sqe_cntl%s\n", step, sqe, nosqe ? " (adreno_nosqe: skipping)" : "");
+	if (maskserror) {
+		printf("adreno: %u: masking async SErrors on this CPU (adreno_maskserror)\n", step);
+		__asm__ volatile("msr daifset, #0x2" : : : "memory");
+	}
 	if (!nosqe) {
 		put(&gpu, "cp_sqe_cntl", CP_SQE_CNTL, sqe);
 	}
@@ -3308,7 +3314,7 @@ step_core_start(void)
 	printf("adreno: %u: the write to cp_sqe_cntl came back\n", step);
 	sleep_ms(20);
 	printf("adreno: %u: awake 20 ms after it\n", step);
-	if (!loose_map) {
+	if (!loose_map || maskserror) {
 	get(&gpu, "rbbm_status", RBBM_STATUS);
 	get(&gpu, "rbbm_int_0_status", RBBM_INT_0_STATUS);
 	get(&gpu, "cp_hw_fault", CP_HW_FAULT);
@@ -3319,7 +3325,7 @@ step_core_start(void)
 	get(&smmu, "sgfsr", SMMU_SGFSR);
 	get(&smmu, "sgfsynr0", SMMU_SGFSR + 8);
 	}
-	if (loose_map) {
+	if (loose_map && !maskserror) {
 		printf("adreno: %u: loose: the write was posted; holding 3 s so the loader takes this down, then giving up the start\n", step);
 		sleep_ms(3000);
 		return false;
