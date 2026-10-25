@@ -3308,6 +3308,7 @@ step_core_start(void)
 	printf("adreno: %u: the write to cp_sqe_cntl came back\n", step);
 	sleep_ms(20);
 	printf("adreno: %u: awake 20 ms after it\n", step);
+	if (!loose_map) {
 	get(&gpu, "rbbm_status", RBBM_STATUS);
 	get(&gpu, "rbbm_int_0_status", RBBM_INT_0_STATUS);
 	get(&gpu, "cp_hw_fault", CP_HW_FAULT);
@@ -3317,6 +3318,12 @@ step_core_start(void)
 	get(&smmu, "cb fsr", smmu_context(&core_space) + SMMU_CB_FSR);
 	get(&smmu, "sgfsr", SMMU_SGFSR);
 	get(&smmu, "sgfsynr0", SMMU_SGFSR + 8);
+	}
+	if (loose_map) {
+		printf("adreno: %u: loose: the write was posted; holding 3 s so the loader takes this down, then giving up the start\n", step);
+		sleep_ms(3000);
+		return false;
+	}
 	if (blind) {
 		return space_faulted(&core_space);
 	}
