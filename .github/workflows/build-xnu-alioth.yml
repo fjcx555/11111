@@ -37,7 +37,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential git curl wget tar xz-utils make clang lld flex bison m4 \
             perl python3 autoconf automake libtool pkg-config libxml2-dev libssl-dev \
-            zlib1g-dev libbz2-dev libtinfo6 uuid-dev
+            zlib1g-dev libbz2-dev libtinfo6 uuid-dev ccache
+
+      - name: ccache cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: xnu-ccache-${{ github.sha }}
+          restore-keys: xnu-ccache-
 
       - name: theos (Linux toolchain)
         run: |
@@ -116,7 +123,10 @@ jobs:
           # stubs' DriverKit RPC names (xnu/README.md: "make exits with status 2; the kernel is ready
           # by then"). A real error is one that leaves the kernel file missing -- fail on that.
           set +e
-          DEVICE=alioth ./xnu-build.sh -j"$(nproc)" -k
+          export CCACHE_DIR="$HOME/.cache/ccache"
+          export CCACHE_MAXSIZE=2G
+          export PATH="/usr/lib/ccache:$PATH"
+          DEVICE=alioth ./xnu-build.sh -j"$(nproc)" -k CC="ccache xnu-clang" CXX="ccache xnu-clang++"
           st=$?
           set -e
           echo "xnu-build exit status: $st (2 is expected: export check + symbolsets after link)"
