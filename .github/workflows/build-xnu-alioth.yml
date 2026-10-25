@@ -88,9 +88,28 @@ jobs:
       - name: build the kernel
         run: |
           cd src/hackios-xnu-kernel-main
-          # make's dSYM rule runs "$(shell xcrun -find dsymutil) --minimize ..."; no dsymutil
-          # exists on Linux, and an empty DSYMUTIL turns "--minimize" into a command.
-          printf '#!/bin/sh\nexit 0\n' > xnu-deps/host/bin/dsymutil
+          # make's dSYM rule runs "$(shell xcrun -find dsymutil) --minimize -o <bundle> <kernel>"
+          # and then mv's <bundle>/Contents/Resources/DWARF/<kernel> somewhere. On Linux there is
+          # no dsymutil: an empty DSYMUTIL turns "--minimize" into a command, and a no-op one
+          # leaves the mv without its source. This stub reproduces dsymutil's two side effects.
+          cat > xnu-deps/host/bin/dsymutil <<'EOF'
+#!/bin/sh
+out=""
+bin=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    --minimize|-minimize|-arch|-sdk|-platform|-v|-verbose) shift ;;
+    -*) shift ;;
+    *) bin="$1"; shift ;;
+  esac
+done
+[ -n "$out" ] || exit 0
+[ -n "$bin" ] || bin="$out"
+mkdir -p "$out/Contents/Resources/DWARF"
+[ -f "$bin" ] && cp "$bin" "$out/Contents/Resources/DWARF/$(basename "$bin")"
+exit 0
+EOF
           chmod +x xnu-deps/host/bin/dsymutil
           DEVICE=alioth ./xnu-build.sh -j"$(nproc)" -k
           ls -la xnu-src/xnu-8796.121.2/BUILD/obj/*/mach.development.* || true
