@@ -1453,6 +1453,11 @@ ufs_dump_log(void)
 		printf("ufs: dump_log: no partition logdump\n");
 		return;
 	}
+	if (!ufs_native_on || ufs_lun[part] == 0xff) {
+		printf("ufs: dump_log: native driver not on (lun %x); dump skipped, no mailbox reads\n",
+		    ufs_lun[part]);
+		return;
+	}
 	bs = ufs_page->part[part].block_size;
 	total = ufs_page->part[part].blocks * bs;
 	if (total > 128 * 1024) {
@@ -1548,10 +1553,6 @@ redwood_ufs_init(void)
 	printf("ufs: %u partitions of the phone's storage as /dev/ufs_NAME and /dev/rufs_NAME, read only, "
 	    "through the loader's page at %llx and its %u KB buffer\n", made, pa, ufs_buffer_size >> 10);
 
-	check = 0;
-	if (PE_parse_boot_argn("ufs_dump_log", &check, sizeof(check)) && check == 1) {
-		ufs_dump_log();
-	}
 	/*
 	 * ufs_write=1: /dev/rufs_darwin takes writes, past the iOS volume and the cryptexes. darwin
 	 * has to be the partition the port was set up with, in everything the loader's table says of
@@ -1656,6 +1657,11 @@ redwood_ufs_init(void)
 		} else {
 			printf("ufs: this kernel's own UFS driver is not used: through the loader\n");
 		}
+	}
+
+	check = 0;
+	if (PE_parse_boot_argn("ufs_dump_log", &check, sizeof(check)) && check == 1) {
+		ufs_dump_log();
 	}
 
 	if (PE_parse_boot_argn("ufs_bench", &check, sizeof(check)) && check != 0) {
