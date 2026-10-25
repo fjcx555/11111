@@ -3312,9 +3312,20 @@ step_core_start(void)
 		 * posted, so the mask is held across the window in which the async SError
 		 * of a bus fault would arrive, then dropped before any further printing.
 		 */
+		uint32_t maskspin = 200;
+		PE_parse_boot_argn("adreno_maskspin", &maskspin, sizeof(maskspin));
 		__asm__ volatile("str %w0, [%1]" : : "r"((uint32_t)sqe), "r"((uint64_t)(gpu.base + CP_SQE_CNTL)) : "memory");
-		for (volatile uint32_t spin = 0; spin < 8000000; spin++) ;
+		/*
+		 * Hold the mask for adreno_maskspin ms: the async SError of a bus fault
+		 * arrives later than the write itself (the first masked runs that dropped
+		 * the mask after a few ms all died on unmasking too early). A raw spin,
+		 * because nothing may print while DAIF.A is set.
+		 */
+		for (uint32_t m = 0; m < maskspin; m++) {
+			for (volatile uint32_t spin = 0; spin < 1000000; spin++) ;
+		}
 		__asm__ volatile("msr daifclr, #0x2" : : : "memory");
+		printf("adreno: %u: unmasked after %u ms of holding the mask\n", step, maskspin);
 	} else {
 		put(&gpu, "cp_sqe_cntl", CP_SQE_CNTL, sqe);
 	}
